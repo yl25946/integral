@@ -489,6 +489,8 @@ Score Search::PVSearch(int depth,
             score,
             move);
         transposition_table.Save(state.zobrist_key, stack->ply, new_tt_entry);
+
+        return score;
       }
     }
   }
