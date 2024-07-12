@@ -435,8 +435,66 @@ Score Search::PVSearch(int depth,
     depth--;
   }
 
-  // Keep track of the original alpha for bound determination when updating the
-  // transposition table
+  // Probcut: If we have a good capture or promotion that fails high and a
+  // probcut_beta way higher than beta, we can (almost) safely cut
+  int probcut_beta = beta + 350;
+  if (!in_pv_node && !state.InCheck() && depth > 3 &&
+      std::abs(beta) < kMateScore - kMaxPlyFromRoot &&
+      // If the value from the transposition table is lower than probcut beta,
+      // don't probcut because there's a chance that the transposition table
+      // cuts off
+      !(tt_hit && tt_entry.depth >= depth - 3 &&
+        tt_entry.score < probcut_beta)) {
+    MovePicker move_picker(
+        MovePickerType::kQuiescence, board_, tt_move, history_, stack);
+    while (const auto move = move_picker.Next()) {
+      // Stop searching since all the good tactical moves have been searched
+      if (move_picker.GetStage() > MovePicker::Stage::kGoodTacticals) {
+        break;
+      }
+
+      if (!board_.IsMoveLegal(move)) {
+        continue;
+      }
+
+      if (move.IsUnderPromotion()) {
+        continue;
+      }
+
+      // Prefetch the TT entry for the next move as early as possible
+      transposition_table.Prefetch(board_.PredictKeyAfter(move));
+
+      nodes_searched_++;
+
+      board_.MakeMove(move);
+      Score score = -QuiescentSearch<NodeType::kNonPV>(
+          -probcut_beta, -probcut_beta + 1, stack + 1);
+
+      if (!searching_ || ShouldQuit()) {
+        return 0;
+      }
+
+      if (score >= probcut_beta) {
+        score = -PVSearch<NodeType::kNonPV>(
+            depth - 4, -probcut_beta, -probcut_beta + 1, stack + 1, !cut_node);
+      }
+
+      board_.UndoMove();
+
+      if (score >= probcut_beta) {
+        const TranspositionTableEntry new_tt_entry(
+            state.zobrist_key,
+            depth - 3,
+            TranspositionTableEntry::kLowerBound,
+            score,
+            move);
+        transposition_table.Save(state.zobrist_key, stack->ply, new_tt_entry);
+      }
+    }
+  }
+
+  // Keep track of the original alpha for bound determination when updating
+  // the transposition table
   const int original_alpha = alpha;
   // Keep track of quiet and capture moves that failed to cause a beta cutoff
   MoveList quiets, captures;
